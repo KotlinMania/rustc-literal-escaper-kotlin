@@ -19,12 +19,8 @@ public class CharEscapeOutcome private constructor(
 
     public fun codePointOrNull(): Int? = if (escapeError == null) scalarCodePoint else null
 
-    public fun charOrNull(): Char? =
-        if (escapeError == null && scalarCodePoint <= Char.MAX_VALUE.code) {
-            scalarCodePoint.toChar()
-        } else {
-            null
-        }
+    public val isBmpChar: Boolean
+        get() = escapeError == null && scalarCodePoint <= Char.MAX_VALUE.code
 
     public fun asStringOrNull(): String? =
         if (escapeError == null) codePointToString(scalarCodePoint) else null
@@ -70,6 +66,8 @@ public class CharEscapeOutcome private constructor(
 
     public companion object {
         public fun ok(c: Char): CharEscapeOutcome = okCodePoint(c.code)
+
+        public fun ok(codePoint: Int): CharEscapeOutcome = okCodePoint(codePoint)
 
         public fun okCodePoint(codePoint: Int): CharEscapeOutcome {
             require(isValidUnicodeScalar(codePoint)) {

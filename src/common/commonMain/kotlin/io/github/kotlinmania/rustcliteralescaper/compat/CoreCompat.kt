@@ -84,14 +84,19 @@ internal fun hexDigitValue(codePoint: Int): Int? =
         else -> null
     }
 
-internal class ScalarCursor(
+/**
+ * Compatibility Unicode scalar iterator mirroring Rust's `core::str::Chars`,
+ * tracking UTF-8 byte offsets while decoding UTF-16 surrogate pairs.
+ */
+internal class Chars(
     private val source: String,
+    private var utf16Index: Int = 0,
+    initialByteIndex: Int = 0,
 ) {
-    private var utf16Index: Int = 0
-    var byteIndex: Int = 0
+    var byteIndex: Int = initialByteIndex
         private set
 
-    fun nextCodePoint(): Int? {
+    fun next(): Int? {
         if (utf16Index >= source.length) {
             return null
         }
@@ -111,7 +116,7 @@ internal class ScalarCursor(
         return scalar
     }
 
-    fun peekCodePoint(): Int? {
+    fun peek(): Int? {
         if (utf16Index >= source.length) {
             return null
         }
@@ -124,4 +129,6 @@ internal class ScalarCursor(
         }
         return first.code
     }
+
+    fun clone(): Chars = Chars(source, utf16Index, byteIndex)
 }

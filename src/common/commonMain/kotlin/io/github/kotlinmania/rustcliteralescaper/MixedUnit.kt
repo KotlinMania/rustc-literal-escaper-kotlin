@@ -1,5 +1,7 @@
 package io.github.kotlinmania.rustcliteralescaper
 
+internal typealias Error = EscapeError
+
 /**
  * Unit representing either a non-zero Unicode scalar or a non-ASCII high byte.
  *
@@ -59,6 +61,8 @@ public class MixedUnit private constructor(
             }
 
         public fun tryFrom(c: Char): MixedUnitEscapeOutcome = tryFromCodePoint(c.code)
+
+        public fun tryFrom(codePoint: Int): MixedUnitEscapeOutcome = tryFromCodePoint(codePoint)
 
         public fun tryFromCodePoint(codePoint: Int): MixedUnitEscapeOutcome =
             NonZeroChar.fromCodePoint(codePoint)?.let { MixedUnitEscapeOutcome.ok(char(it)) }

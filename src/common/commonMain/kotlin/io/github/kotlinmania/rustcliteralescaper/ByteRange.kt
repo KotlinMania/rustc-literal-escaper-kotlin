@@ -53,10 +53,17 @@ public class NonZeroU8 private constructor(
 public class NonZeroChar private constructor(
     public val codePoint: Int,
 ) {
-    public fun getCodePoint(): Int = codePoint
+    public fun get(): Int = codePoint
 
-    public fun toCharOrNull(): Char? =
-        if (codePoint <= Char.MAX_VALUE.code) codePoint.toChar() else null
+    public val isBmpChar: Boolean
+        get() = codePoint <= Char.MAX_VALUE.code
+
+    public fun toBmpChar(): Char {
+        if (codePoint > Char.MAX_VALUE.code) {
+            throw IllegalStateException("Supplementary Unicode scalar $codePoint does not fit in a single UTF-16 Char")
+        }
+        return codePoint.toChar()
+    }
 
     public fun asString(): String = codePointToString(codePoint)
 
@@ -71,6 +78,8 @@ public class NonZeroChar private constructor(
 
     public companion object {
         public fun new(c: Char): NonZeroChar? = fromCodePoint(c.code)
+
+        public fun new(codePoint: Int): NonZeroChar? = fromCodePoint(codePoint)
 
         public fun fromCodePoint(codePoint: Int): NonZeroChar? =
             if (codePoint != 0 && isValidUnicodeScalar(codePoint)) {

@@ -1,6 +1,6 @@
 package io.github.kotlinmania.rustcliteralescaper
 
-import io.github.kotlinmania.rustcliteralescaper.compat.ScalarCursor
+import io.github.kotlinmania.rustcliteralescaper.compat.Chars
 
 /**
  * Literal mode describing the quote syntax and prefix of a Rust literal.
@@ -64,8 +64,8 @@ public enum class Mode {
 /**
  * Check a literal body only for escape or validation errors.
  *
- * Takes the contents of a literal without quotes and invokes [errorCallback]
- * for each error or warning encountered.
+ * Takes the contents of a literal without quotes and produces a sequence of
+ * only errors or warnings, which are returned by invoking [errorCallback].
  */
 public fun checkForErrors(
     src: String,
@@ -74,16 +74,16 @@ public fun checkForErrors(
 ) {
     when (mode) {
         Mode.Char -> {
-            val chars = ScalarCursor(src)
-            val outcome = unescapeSingleChar(chars)
+            val chars = Chars(src)
+            val outcome = StrUnescape.unescapeSingle(chars)
             val err = outcome.errorOrNull()
             if (err != null) {
                 errorCallback.onError(ByteRange(0, chars.byteIndex), err)
             }
         }
         Mode.Byte -> {
-            val chars = ScalarCursor(src)
-            val outcome = unescapeSingleByte(chars)
+            val chars = Chars(src)
+            val outcome = ByteSliceUnescape.unescapeSingle(chars)
             val err = outcome.errorOrNull()
             if (err != null) {
                 errorCallback.onError(ByteRange(0, chars.byteIndex), err)

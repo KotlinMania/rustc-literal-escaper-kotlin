@@ -1,81 +1,49 @@
 package io.github.kotlinmania.rustcliteralescaper
 
-import io.github.kotlinmania.rustcliteralescaper.compat.ScalarCursor
+import io.github.kotlinmania.rustcliteralescaper.compat.Chars
+
+internal typealias RawUnit = CharEscapeOutcome
 
 /**
  * Check a raw string literal for validity.
  *
  * Takes the contents of a raw string literal without quotes and produces a
- * sequence of characters or errors through [callback].
- * Does no escaping, but produces errors for bare carriage return.
+ * sequence of characters or errors, which are returned by invoking [callback].
+ * Note: Does no escaping, but produces errors for bare carriage return (`'\r'`).
  */
 public fun checkRawStr(
     src: String,
     callback: CharEscapeCallback,
 ) {
-    val chars = ScalarCursor(src)
-    while (true) {
-        val start = chars.byteIndex
-        val scalar = chars.nextCodePoint() ?: break
-        val outcome =
-            if (scalar == '\r'.code) {
-                CharEscapeOutcome.err(EscapeError.BareCarriageReturnInRawString)
-            } else {
-                CharEscapeOutcome.okCodePoint(scalar)
-            }
-        callback.onUnit(ByteRange(start, chars.byteIndex), outcome)
-    }
+    StrCheckRaw.checkRaw(src, callback::onUnit)
 }
 
 /**
  * Check a raw byte string literal for validity.
  *
  * Takes the contents of a raw byte string literal without quotes and produces a
- * sequence of bytes or errors through [callback].
- * Does no escaping, but produces errors for bare carriage return.
+ * sequence of bytes or errors, which are returned by invoking [callback].
+ * Note: Does no escaping, but produces errors for bare carriage return (`'\r'`).
  */
 public fun checkRawByteStr(
     src: String,
     callback: ByteEscapeCallback,
 ) {
-    val chars = ScalarCursor(src)
-    while (true) {
-        val start = chars.byteIndex
-        val scalar = chars.nextCodePoint() ?: break
-        val outcome =
-            if (scalar == '\r'.code) {
-                ByteEscapeOutcome.err(EscapeError.BareCarriageReturnInRawString)
-            } else {
-                char2byte(scalar)
-            }
-        callback.onUnit(ByteRange(start, chars.byteIndex), outcome)
-    }
+    ByteSliceCheckRaw.checkRaw(src, callback::onUnit)
 }
 
 /**
  * Check a raw C string literal for validity.
  *
  * Takes the contents of a raw C string literal without quotes and produces a
- * sequence of non-zero characters or errors through [callback].
- * Does no escaping, but produces errors for bare carriage return.
+ * sequence of non-zero characters or errors, which are returned by invoking [callback].
+ * Note: Does no escaping, but produces errors for bare carriage return (`'\r'`).
  */
 public fun checkRawCStr(
     src: String,
     callback: NonZeroCharEscapeCallback,
 ) {
-    val chars = ScalarCursor(src)
-    while (true) {
-        val start = chars.byteIndex
-        val scalar = chars.nextCodePoint() ?: break
-        val outcome =
-            if (scalar == '\r'.code) {
-                NonZeroCharEscapeOutcome.err(EscapeError.BareCarriageReturnInRawString)
-            } else {
-                NonZeroChar.fromCodePoint(scalar)?.let(NonZeroCharEscapeOutcome::ok)
-                    ?: NonZeroCharEscapeOutcome.err(EscapeError.NulInCStr)
-            }
-        callback.onUnit(ByteRange(start, chars.byteIndex), outcome)
-    }
+    CStrCheckRaw.checkRaw(src, callback::onUnit)
 }
 
 /**
@@ -109,6 +77,62 @@ public fun collectCheckRawCStr(src: String): List<NonZeroCharEscapeStep> {
         steps.add(NonZeroCharEscapeStep(range, outcome))
     }
     return steps.toList()
+}
+
+/**
+ * Internal interface for checking raw string literals for validity.
+ */
+internal interface CheckRaw<RawUnit> {
+    /** Converts Unicode scalars to the unit outcome of the literal type. */
+    fun char2rawUnit(codePoint: Int): RawUnit
+
+    /** Outcome produced when a bare carriage return (`'\r'`) is encountered. */
+    fun bareCarriageReturnUnit(): RawUnit
+
+    /**
+     * Takes the contents of a raw literal without quotes and produces a
+     * sequence of unit outcomes via [callback].
+     */
+    fun checkRaw(
+        src: String,
+        callback: (ByteRange, RawUnit) -> Unit,
+    ) {
+        val chars = Chars(src)
+        while (true) {
+            val start = chars.byteIndex
+            val scalar = chars.next() ?: break
+            val outcome =
+                if (scalar == '\r'.code) {
+                    bareCarriageReturnUnit()
+                } else {
+                    char2rawUnit(scalar)
+                }
+            callback(ByteRange(start, chars.byteIndex), outcome)
+        }
+    }
+}
+
+private object StrCheckRaw : CheckRaw<CharEscapeOutcome> {
+    override fun char2rawUnit(codePoint: Int): CharEscapeOutcome = CharEscapeOutcome.okCodePoint(codePoint)
+
+    override fun bareCarriageReturnUnit(): CharEscapeOutcome =
+        CharEscapeOutcome.err(EscapeError.BareCarriageReturnInRawString)
+}
+
+private object ByteSliceCheckRaw : CheckRaw<ByteEscapeOutcome> {
+    override fun char2rawUnit(codePoint: Int): ByteEscapeOutcome = char2byte(codePoint)
+
+    override fun bareCarriageReturnUnit(): ByteEscapeOutcome =
+        ByteEscapeOutcome.err(EscapeError.BareCarriageReturnInRawString)
+}
+
+private object CStrCheckRaw : CheckRaw<NonZeroCharEscapeOutcome> {
+    override fun char2rawUnit(codePoint: Int): NonZeroCharEscapeOutcome =
+        NonZeroChar.fromCodePoint(codePoint)?.let(NonZeroCharEscapeOutcome::ok)
+            ?: NonZeroCharEscapeOutcome.err(EscapeError.NulInCStr)
+
+    override fun bareCarriageReturnUnit(): NonZeroCharEscapeOutcome =
+        NonZeroCharEscapeOutcome.err(EscapeError.BareCarriageReturnInRawString)
 }
 
 /** Turn an ASCII scalar into a byte outcome. */

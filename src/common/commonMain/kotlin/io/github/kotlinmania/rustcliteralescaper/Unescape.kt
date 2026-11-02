@@ -1,7 +1,7 @@
 package io.github.kotlinmania.rustcliteralescaper
 
+import io.github.kotlinmania.rustcliteralescaper.compat.Chars
 import io.github.kotlinmania.rustcliteralescaper.compat.MAX_UNICODE_SCALAR
-import io.github.kotlinmania.rustcliteralescaper.compat.ScalarCursor
 import io.github.kotlinmania.rustcliteralescaper.compat.hexDigitValue
 import io.github.kotlinmania.rustcliteralescaper.compat.isUnicodeWhitespace
 import io.github.kotlinmania.rustcliteralescaper.compat.isValidUnicodeScalar
@@ -14,7 +14,7 @@ import io.github.kotlinmania.rustcliteralescaper.compat.utf8ByteLength
  * unescaped character scalar or an error.
  */
 public fun unescapeChar(src: String): CharEscapeOutcome =
-    unescapeSingleChar(ScalarCursor(src))
+    StrUnescape.unescapeSingle(Chars(src))
 
 /**
  * Unescape a byte literal.
@@ -23,108 +23,48 @@ public fun unescapeChar(src: String): CharEscapeOutcome =
  * unescaped byte or an error.
  */
 public fun unescapeByte(src: String): ByteEscapeOutcome =
-    unescapeSingleByte(ScalarCursor(src))
+    ByteSliceUnescape.unescapeSingle(Chars(src))
 
 /**
  * Unescape a string literal.
  *
  * Takes the contents of a string literal without quotes and produces a
- * sequence of unescaped character scalars or errors through [callback].
+ * sequence of unescaped character scalars or errors, which are returned by
+ * invoking [callback].
  */
 public fun unescapeStr(
     src: String,
     callback: CharEscapeCallback,
 ) {
-    val chars = ScalarCursor(src)
-    while (true) {
-        val start = chars.byteIndex
-        val scalar = chars.nextCodePoint() ?: break
-        val outcome =
-            when (scalar) {
-                '\\'.code -> {
-                    if (chars.peekCodePoint() == '\n'.code) {
-                        chars.nextCodePoint()
-                        skipAsciiWhitespace(chars, start) { range, err ->
-                            callback.onUnit(range, CharEscapeOutcome.err(err))
-                        }
-                        continue
-                    }
-                    unescape1Char(chars)
-                }
-                '"'.code -> CharEscapeOutcome.err(EscapeError.EscapeOnlyChar)
-                '\r'.code -> CharEscapeOutcome.err(EscapeError.BareCarriageReturn)
-                else -> CharEscapeOutcome.okCodePoint(scalar)
-            }
-        callback.onUnit(ByteRange(start, chars.byteIndex), outcome)
-    }
+    StrUnescape.unescape(src, callback::onUnit)
 }
 
 /**
  * Unescape a byte string literal.
  *
  * Takes the contents of a byte string literal without quotes and produces a
- * sequence of unescaped bytes or errors through [callback].
+ * sequence of unescaped bytes or errors, which are returned by invoking
+ * [callback].
  */
 public fun unescapeByteStr(
     src: String,
     callback: ByteEscapeCallback,
 ) {
-    val chars = ScalarCursor(src)
-    while (true) {
-        val start = chars.byteIndex
-        val scalar = chars.nextCodePoint() ?: break
-        val outcome =
-            when (scalar) {
-                '\\'.code -> {
-                    if (chars.peekCodePoint() == '\n'.code) {
-                        chars.nextCodePoint()
-                        skipAsciiWhitespace(chars, start) { range, err ->
-                            callback.onUnit(range, ByteEscapeOutcome.err(err))
-                        }
-                        continue
-                    }
-                    unescape1Byte(chars)
-                }
-                '"'.code -> ByteEscapeOutcome.err(EscapeError.EscapeOnlyChar)
-                '\r'.code -> ByteEscapeOutcome.err(EscapeError.BareCarriageReturn)
-                else -> char2byte(scalar)
-            }
-        callback.onUnit(ByteRange(start, chars.byteIndex), outcome)
-    }
+    ByteSliceUnescape.unescape(src, callback::onUnit)
 }
 
 /**
  * Unescape a C string literal.
  *
  * Takes the contents of a C string literal without quotes and produces a
- * sequence of unescaped [MixedUnit] values or errors through [callback].
+ * sequence of unescaped [MixedUnit] values or errors, which are returned by
+ * invoking [callback].
  */
 public fun unescapeCStr(
     src: String,
     callback: MixedUnitEscapeCallback,
 ) {
-    val chars = ScalarCursor(src)
-    while (true) {
-        val start = chars.byteIndex
-        val scalar = chars.nextCodePoint() ?: break
-        val outcome =
-            when (scalar) {
-                '\\'.code -> {
-                    if (chars.peekCodePoint() == '\n'.code) {
-                        chars.nextCodePoint()
-                        skipAsciiWhitespace(chars, start) { range, err ->
-                            callback.onUnit(range, MixedUnitEscapeOutcome.err(err))
-                        }
-                        continue
-                    }
-                    unescape1CStr(chars)
-                }
-                '"'.code -> MixedUnitEscapeOutcome.err(EscapeError.EscapeOnlyChar)
-                '\r'.code -> MixedUnitEscapeOutcome.err(EscapeError.BareCarriageReturn)
-                else -> MixedUnit.tryFromCodePoint(scalar)
-            }
-        callback.onUnit(ByteRange(start, chars.byteIndex), outcome)
-    }
+    CStrUnescape.unescape(src, callback::onUnit)
 }
 
 /**
@@ -160,144 +100,196 @@ public fun collectUnescapeCStr(src: String): List<MixedUnitEscapeStep> {
     return steps.toList()
 }
 
-internal fun unescapeSingleChar(chars: ScalarCursor): CharEscapeOutcome {
-    val first =
-        when (val scalar = chars.nextCodePoint()) {
-            null -> return CharEscapeOutcome.err(EscapeError.ZeroChars)
-            '\\'.code -> unescape1Char(chars)
-            '\n'.code, '\t'.code, '\''.code -> CharEscapeOutcome.err(EscapeError.EscapeOnlyChar)
-            '\r'.code -> CharEscapeOutcome.err(EscapeError.BareCarriageReturn)
-            else -> CharEscapeOutcome.okCodePoint(scalar)
-        }
-    if (first.isErr) {
-        return first
-    }
-    if (chars.nextCodePoint() != null) {
-        return CharEscapeOutcome.err(EscapeError.MoreThanOneChar)
-    }
-    return first
-}
+/**
+ * Internal interface for unescaping escape sequences in character, byte, and string literals.
+ */
+internal interface Unescape<U> {
+    /** Outcome of unescaping the zero escape (`'\0'`). */
+    val ZERO_RESULT: U
 
-internal fun unescapeSingleByte(chars: ScalarCursor): ByteEscapeOutcome {
-    val first =
-        when (val scalar = chars.nextCodePoint()) {
-            null -> return ByteEscapeOutcome.err(EscapeError.ZeroChars)
-            '\\'.code -> unescape1Byte(chars)
-            '\n'.code, '\t'.code, '\''.code -> ByteEscapeOutcome.err(EscapeError.EscapeOnlyChar)
-            '\r'.code -> ByteEscapeOutcome.err(EscapeError.BareCarriageReturn)
-            else -> char2byte(scalar)
-        }
-    if (first.isErr) {
-        return first
-    }
-    if (chars.nextCodePoint() != null) {
-        return ByteEscapeOutcome.err(EscapeError.MoreThanOneChar)
-    }
-    return first
-}
+    /** Converts non-zero ASCII bytes to the unit outcome. */
+    fun nonzeroByte2unit(b: NonZeroU8): U
 
-private fun unescape1Char(chars: ScalarCursor): CharEscapeOutcome {
-    val scalar = chars.nextCodePoint() ?: return CharEscapeOutcome.err(EscapeError.LoneSlash)
-    if (scalar == '0'.code) {
-        return CharEscapeOutcome.okCodePoint(0)
+    /** Converts Unicode scalars to the unit outcome. */
+    fun char2unit(codePoint: Int): U
+
+    /** Converts the byte of a hexadecimal escape to the unit outcome. */
+    fun hex2unit(b: UByte): U
+
+    /** Converts the outcome of a Unicode escape to the unit outcome. */
+    fun unicode2unit(r: CharEscapeOutcome): U
+
+    /** Wraps an [EscapeError] into the unit outcome. */
+    fun error2unit(error: EscapeError): U
+
+    /** Returns true when [unit] holds an [EscapeError]. */
+    fun isError(unit: U): Boolean
+
+    /** Unescape a single unit (single-quote syntax). */
+    fun unescapeSingle(chars: Chars): U {
+        val res =
+            when (val scalar = chars.next()) {
+                null -> return error2unit(EscapeError.ZeroChars)
+                '\\'.code -> unescape1(chars)
+                '\n'.code, '\t'.code, '\''.code -> error2unit(EscapeError.EscapeOnlyChar)
+                '\r'.code -> error2unit(EscapeError.BareCarriageReturn)
+                else -> char2unit(scalar)
+            }
+        if (isError(res)) {
+            return res
+        }
+        if (chars.next() != null) {
+            return error2unit(EscapeError.MoreThanOneChar)
+        }
+        return res
     }
-    val simple = simpleEscape(scalar)
-    if (simple != null) {
-        return CharEscapeOutcome.okCodePoint(simple.get().toInt())
-    }
-    return when (scalar) {
-        'x'.code -> {
-            val byteOutcome = hexEscape(chars)
-            val err = byteOutcome.errorOrNull()
-            if (err != null) {
-                CharEscapeOutcome.err(err)
-            } else {
-                val b = byteOutcome.unwrap()
-                if (b <= 0x7Fu) {
-                    CharEscapeOutcome.okCodePoint(b.toInt())
+
+    /** Unescape the first unit following a leading backslash (double-quote or single-quote syntax). */
+    fun unescape1(chars: Chars): U {
+        val scalar = chars.next() ?: return error2unit(EscapeError.LoneSlash)
+        if (scalar == '0'.code) {
+            return ZERO_RESULT
+        }
+        val simple = simpleEscape(scalar)
+        if (simple != null) {
+            return nonzeroByte2unit(simple)
+        }
+        return when (scalar) {
+            'x'.code -> {
+                val hex = hexEscape(chars)
+                val err = hex.errorOrNull()
+                if (err != null) {
+                    error2unit(err)
                 } else {
-                    CharEscapeOutcome.err(EscapeError.OutOfRangeHexEscape)
+                    hex2unit(hex.unwrap())
                 }
             }
-        }
-        'u'.code -> {
-            when (val raw = unicodeEscape(chars)) {
-                is UnicodeEscapeParse.Err -> CharEscapeOutcome.err(raw.error)
-                is UnicodeEscapeParse.Ok -> decodeUnicodeScalar(raw.value)
-            }
-        }
-        else -> CharEscapeOutcome.err(EscapeError.InvalidEscape)
-    }
-}
-
-private fun unescape1Byte(chars: ScalarCursor): ByteEscapeOutcome {
-    val scalar = chars.nextCodePoint() ?: return ByteEscapeOutcome.err(EscapeError.LoneSlash)
-    if (scalar == '0'.code) {
-        return ByteEscapeOutcome.ok(0u)
-    }
-    val simple = simpleEscape(scalar)
-    if (simple != null) {
-        return ByteEscapeOutcome.ok(simple.get())
-    }
-    return when (scalar) {
-        'x'.code -> hexEscape(chars)
-        'u'.code -> {
-            when (val raw = unicodeEscape(chars)) {
-                is UnicodeEscapeParse.Err -> ByteEscapeOutcome.err(raw.error)
-                is UnicodeEscapeParse.Ok -> {
-                    decodeUnicodeScalar(raw.value)
-                    ByteEscapeOutcome.err(EscapeError.UnicodeEscapeInByte)
-                }
-            }
-        }
-        else -> ByteEscapeOutcome.err(EscapeError.InvalidEscape)
-    }
-}
-
-private fun unescape1CStr(chars: ScalarCursor): MixedUnitEscapeOutcome {
-    val scalar = chars.nextCodePoint() ?: return MixedUnitEscapeOutcome.err(EscapeError.LoneSlash)
-    if (scalar == '0'.code) {
-        return MixedUnitEscapeOutcome.err(EscapeError.NulInCStr)
-    }
-    val simple = simpleEscape(scalar)
-    if (simple != null) {
-        return MixedUnitEscapeOutcome.ok(MixedUnit.from(simple))
-    }
-    return when (scalar) {
-        'x'.code -> {
-            val byteOutcome = hexEscape(chars)
-            val err = byteOutcome.errorOrNull()
-            if (err != null) {
-                MixedUnitEscapeOutcome.err(err)
-            } else {
-                MixedUnit.tryFrom(byteOutcome.unwrap())
-            }
-        }
-        'u'.code -> {
-            when (val raw = unicodeEscape(chars)) {
-                is UnicodeEscapeParse.Err -> MixedUnitEscapeOutcome.err(raw.error)
-                is UnicodeEscapeParse.Ok -> {
-                    val decoded = decodeUnicodeScalar(raw.value)
-                    val err = decoded.errorOrNull()
-                    if (err != null) {
-                        MixedUnitEscapeOutcome.err(err)
-                    } else {
-                        MixedUnit.tryFromCodePoint(decoded.unwrapCodePoint())
+            'u'.code -> {
+                val raw = unicodeEscape(chars)
+                when (raw) {
+                    is UnicodeEscapeParse.Err -> error2unit(raw.error)
+                    is UnicodeEscapeParse.Ok -> {
+                        val decoded =
+                            when {
+                                raw.value > MAX_UNICODE_SCALAR ->
+                                    CharEscapeOutcome.err(EscapeError.OutOfRangeUnicodeEscape)
+                                !isValidUnicodeScalar(raw.value) ->
+                                    CharEscapeOutcome.err(EscapeError.LoneSurrogateUnicodeEscape)
+                                else ->
+                                    CharEscapeOutcome.okCodePoint(raw.value)
+                            }
+                        unicode2unit(decoded)
                     }
                 }
             }
+            else -> error2unit(EscapeError.InvalidEscape)
         }
-        else -> MixedUnitEscapeOutcome.err(EscapeError.InvalidEscape)
+    }
+
+    /**
+     * Unescape a double-quoted string literal body and report each step via [callback].
+     */
+    fun unescape(
+        src: String,
+        callback: (ByteRange, U) -> Unit,
+    ) {
+        val chars = Chars(src)
+        while (true) {
+            val start = chars.byteIndex
+            val scalar = chars.next() ?: break
+            val res =
+                when (scalar) {
+                    '\\'.code -> {
+                        if (chars.peek() == '\n'.code) {
+                            chars.next()
+                            skipAsciiWhitespace(chars, start) { range, err ->
+                                callback(range, error2unit(err))
+                            }
+                            continue
+                        }
+                        unescape1(chars)
+                    }
+                    '"'.code -> error2unit(EscapeError.EscapeOnlyChar)
+                    '\r'.code -> error2unit(EscapeError.BareCarriageReturn)
+                    else -> char2unit(scalar)
+                }
+            val end = chars.byteIndex
+            callback(ByteRange(start, end), res)
+        }
     }
 }
 
-private fun decodeUnicodeScalar(value: Int): CharEscapeOutcome =
-    when {
-        value > MAX_UNICODE_SCALAR -> CharEscapeOutcome.err(EscapeError.OutOfRangeUnicodeEscape)
-        !isValidUnicodeScalar(value) -> CharEscapeOutcome.err(EscapeError.LoneSurrogateUnicodeEscape)
-        else -> CharEscapeOutcome.okCodePoint(value)
+internal object StrUnescape : Unescape<CharEscapeOutcome> {
+    override val ZERO_RESULT: CharEscapeOutcome = CharEscapeOutcome.okCodePoint(0)
+
+    override fun nonzeroByte2unit(b: NonZeroU8): CharEscapeOutcome =
+        CharEscapeOutcome.okCodePoint(b.get().toInt())
+
+    override fun char2unit(codePoint: Int): CharEscapeOutcome =
+        CharEscapeOutcome.okCodePoint(codePoint)
+
+    override fun hex2unit(b: UByte): CharEscapeOutcome =
+        if (b <= 0x7Fu) {
+            CharEscapeOutcome.okCodePoint(b.toInt())
+        } else {
+            CharEscapeOutcome.err(EscapeError.OutOfRangeHexEscape)
+        }
+
+    override fun unicode2unit(r: CharEscapeOutcome): CharEscapeOutcome = r
+
+    override fun error2unit(error: EscapeError): CharEscapeOutcome = CharEscapeOutcome.err(error)
+
+    override fun isError(unit: CharEscapeOutcome): Boolean = unit.isErr
+}
+
+internal object ByteSliceUnescape : Unescape<ByteEscapeOutcome> {
+    override val ZERO_RESULT: ByteEscapeOutcome = ByteEscapeOutcome.ok(0u)
+
+    override fun nonzeroByte2unit(b: NonZeroU8): ByteEscapeOutcome = ByteEscapeOutcome.ok(b.get())
+
+    override fun char2unit(codePoint: Int): ByteEscapeOutcome = char2byte(codePoint)
+
+    override fun hex2unit(b: UByte): ByteEscapeOutcome = ByteEscapeOutcome.ok(b)
+
+    override fun unicode2unit(r: CharEscapeOutcome): ByteEscapeOutcome =
+        ByteEscapeOutcome.err(EscapeError.UnicodeEscapeInByte)
+
+    override fun error2unit(error: EscapeError): ByteEscapeOutcome = ByteEscapeOutcome.err(error)
+
+    override fun isError(unit: ByteEscapeOutcome): Boolean = unit.isErr
+}
+
+internal object CStrUnescape : Unescape<MixedUnitEscapeOutcome> {
+    override val ZERO_RESULT: MixedUnitEscapeOutcome =
+        MixedUnitEscapeOutcome.err(EscapeError.NulInCStr)
+
+    override fun nonzeroByte2unit(b: NonZeroU8): MixedUnitEscapeOutcome =
+        MixedUnitEscapeOutcome.ok(MixedUnit.from(b))
+
+    override fun char2unit(codePoint: Int): MixedUnitEscapeOutcome =
+        MixedUnit.tryFromCodePoint(codePoint)
+
+    override fun hex2unit(b: UByte): MixedUnitEscapeOutcome =
+        MixedUnit.tryFrom(b)
+
+    override fun unicode2unit(r: CharEscapeOutcome): MixedUnitEscapeOutcome {
+        val err = r.errorOrNull()
+        return if (err != null) {
+            MixedUnitEscapeOutcome.err(err)
+        } else {
+            char2unit(r.unwrapCodePoint())
+        }
     }
 
+    override fun error2unit(error: EscapeError): MixedUnitEscapeOutcome =
+        MixedUnitEscapeOutcome.err(error)
+
+    override fun isError(unit: MixedUnitEscapeOutcome): Boolean = unit.isErr
+}
+
+/**
+ * Interpret a non-nul ASCII escape without the leading backslash.
+ */
 private fun simpleEscape(codePoint: Int): NonZeroU8? {
     val escaped: UByte =
         when (codePoint) {
@@ -312,10 +304,13 @@ private fun simpleEscape(codePoint: Int): NonZeroU8? {
     return NonZeroU8.new(escaped)
 }
 
-private fun hexEscape(chars: ScalarCursor): ByteEscapeOutcome {
-    val hiScalar = chars.nextCodePoint() ?: return ByteEscapeOutcome.err(EscapeError.TooShortHexEscape)
+/**
+ * Interpret the two hexadecimal digits of a hexadecimal escape without the leading `\x`.
+ */
+private fun hexEscape(chars: Chars): ByteEscapeOutcome {
+    val hiScalar = chars.next() ?: return ByteEscapeOutcome.err(EscapeError.TooShortHexEscape)
     val hi = hexDigitValue(hiScalar) ?: return ByteEscapeOutcome.err(EscapeError.InvalidCharInHexEscape)
-    val loScalar = chars.nextCodePoint() ?: return ByteEscapeOutcome.err(EscapeError.TooShortHexEscape)
+    val loScalar = chars.next() ?: return ByteEscapeOutcome.err(EscapeError.TooShortHexEscape)
     val lo = hexDigitValue(loScalar) ?: return ByteEscapeOutcome.err(EscapeError.InvalidCharInHexEscape)
     return ByteEscapeOutcome.ok(((hi shl 4) or lo).toUByte())
 }
@@ -330,25 +325,28 @@ private sealed class UnicodeEscapeParse {
     ) : UnicodeEscapeParse()
 }
 
-private fun unicodeEscape(chars: ScalarCursor): UnicodeEscapeParse {
-    if (chars.nextCodePoint() != '{'.code) {
+/**
+ * Parse the `{...}` hexadecimal digits (and underscores) of a Unicode escape.
+ */
+private fun unicodeEscape(chars: Chars): UnicodeEscapeParse {
+    if (chars.next() != '{'.code) {
         return UnicodeEscapeParse.Err(EscapeError.NoBraceInUnicodeEscape)
     }
     var value =
-        when (val first = chars.nextCodePoint()) {
+        when (val first = chars.next()) {
             null -> return UnicodeEscapeParse.Err(EscapeError.UnclosedUnicodeEscape)
             '_'.code -> return UnicodeEscapeParse.Err(EscapeError.LeadingUnderscoreUnicodeEscape)
             '}'.code -> return UnicodeEscapeParse.Err(EscapeError.EmptyUnicodeEscape)
             else -> hexDigitValue(first) ?: return UnicodeEscapeParse.Err(EscapeError.InvalidCharInUnicodeEscape)
         }
 
-    var digitCount = 1
+    var nDigits = 1
     while (true) {
-        when (val next = chars.nextCodePoint()) {
+        when (val next = chars.next()) {
             null -> return UnicodeEscapeParse.Err(EscapeError.UnclosedUnicodeEscape)
             '_'.code -> continue
             '}'.code -> {
-                return if (digitCount > 6) {
+                return if (nDigits > 6) {
                     UnicodeEscapeParse.Err(EscapeError.OverlongUnicodeEscape)
                 } else {
                     UnicodeEscapeParse.Ok(value)
@@ -358,8 +356,8 @@ private fun unicodeEscape(chars: ScalarCursor): UnicodeEscapeParse {
                 val digit =
                     hexDigitValue(next)
                         ?: return UnicodeEscapeParse.Err(EscapeError.InvalidCharInUnicodeEscape)
-                digitCount += 1
-                if (digitCount > 6) {
+                nDigits += 1
+                if (nDigits > 6) {
                     continue
                 }
                 value = (value shl 4) + digit
@@ -368,19 +366,23 @@ private fun unicodeEscape(chars: ScalarCursor): UnicodeEscapeParse {
     }
 }
 
+/**
+ * Interpret a string continuation escape, skipping ASCII whitespace except formfeed,
+ * and warning on multiple skipped lines or unskipped Unicode whitespace.
+ */
 private fun skipAsciiWhitespace(
-    chars: ScalarCursor,
+    chars: Chars,
     start: Int,
     callback: EscapeErrorCallback,
 ) {
     var sawNewline = false
     while (true) {
-        when (chars.peekCodePoint()) {
+        when (chars.peek()) {
             ' '.code, '\t'.code, '\r'.code -> {
-                chars.nextCodePoint()
+                chars.next()
             }
             '\n'.code -> {
-                chars.nextCodePoint()
+                chars.next()
                 sawNewline = true
             }
             else -> break
@@ -390,7 +392,7 @@ private fun skipAsciiWhitespace(
     if (sawNewline) {
         callback.onError(ByteRange(start, end), EscapeError.MultipleSkippedLinesWarning)
     }
-    val unskipped = chars.peekCodePoint()
+    val unskipped = chars.clone().next()
     if (unskipped != null && isUnicodeWhitespace(unskipped)) {
         callback.onError(
             ByteRange(start, end + utf8ByteLength(unskipped)),
